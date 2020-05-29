@@ -84,7 +84,7 @@ def ts_clean_inds(ts):
     return ts_only_sample_inds
 
 
-def ts_to_bcf_single(ts_file, out_file, runner):
+def ts_to_bcf_single(ts_file, out_file, runner, keep):
     # Need to remove non-sample individuals from ts or else tskit gets confused
     ts = msprime.load(ts_file)
     if ts.num_individuals == 0:
@@ -92,19 +92,34 @@ def ts_to_bcf_single(ts_file, out_file, runner):
                            ts_file, out_file)
         runner.run(bcf_cmd)
     else:
-        ts_only_sample_inds = ts_clean_inds(ts)
-        # TODO: This will probably fail if metadata isn't present
-        ids = [ind.metadata.decode('utf8')
-               for ind in ts_only_sample_inds.individuals()]
+        #    ts_only_sample_inds = ts_clean_inds(ts)
+        sample_nodes = ts.samples()
+        sample_individuals = []
+        for ind in ts.individuals():
+            if len(ind.nodes) == 0:
+                continue
 
+            if ind.nodes[0] in sample_nodes:
+                assert len(ind.nodes) == 2
+                assert ind.nodes[1] in sample_nodes
+                sample_individuals.append(ind)
+
+        keep_individuals = np.random.choice(sample_individuals, keep, replace=False)
+                
+        # TODO: This will probably fail if metadata isn't present
+        keep_names = [ind.metadata.decode('utf8')
+                        for ind in keep_individuals]
+        keep_ids = [ind.id for ind in  keep_individuals]
+        
+        
         read_fd, write_fd = os.pipe()
         write_pipe = os.fdopen(write_fd, "w")
         with open(out_file, "w") as f:
             proc = subprocess.Popen(
                 ["bcftools", "view", "-O", "b"], stdin=read_fd, stdout=f
             )
-            ts_only_sample_inds.write_vcf(
-                write_pipe, individual_names=ids
+            ts.write_vcf(
+                write_pipe, individuals=keep_ids, individual_names=keep_names
             )
             write_pipe.close()
             os.close(read_fd)
@@ -149,7 +164,7 @@ def main(args):
             tmp_bcf_file = os.path.join(tmpdirname, '.tmp' + str(i) + '.bcf')
             tmp_bcf_files.append(tmp_bcf_file)
 
-            ts_to_bcf_single(tsf, tmp_bcf_file, runner)
+            ts_to_bcf_single(tsf, tmp_bcf_file, runner, args.keep)
             bcf_convert_chrom(tmp_bcf_file, chrom_num, runner)
 
         concat_bcf(tmp_bcf_files, out_file, runner)
@@ -159,6 +174,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-t', '--ts-file', nargs="*", required=True)
     parser.add_argument('-o', '--out-file', required=True)
+    parser.add_argument('-k', '--keep', type=int, default=None, help="Number of individuals to keep in the output. Default - all")
     parser.add_argument('-v', '--verbose', action='store_true')
     parser.add_argument('-T', '--test', action='store_true')
 

@@ -1,5 +1,4 @@
 results/
-data/
 scripts/test/ll_pedEx.txt
 .snakemake/
 snakejob.*
