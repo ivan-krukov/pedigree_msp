@@ -26,90 +26,49 @@ class Runner:
             subprocess.run(cmd, shell=True, check=True)
 
 
-def ts_clean_inds(ts):
-    ll_tables = ts.dump_tables().asdict()
-    sample_nodes = set(ts.samples())
+# TODO - provide a way to subsample based on a file with IDs
+def ts_to_bcf_single(ts_file, out_file, runner, af_cutoff=None, n_subsample=None):
 
-    # Collect sampled individuals, checking they have two sample nodes
-    sample_individuals = []
-    for ind in ts.individuals():
-        if len(ind.nodes) == 0:
-            continue
-
-        if ind.nodes[0] in sample_nodes:
-            assert len(ind.nodes) == 2
-            assert ind.nodes[1] in sample_nodes
-            sample_individuals.append(ind)
-
-    # Since we depend on the sampled individuals being the first $n$
-    # individuals, check that this is in fact the case, and pull out the
-    # last individual
-    sample_individual_ids = [ind.id for ind in sample_individuals]
-    assert np.min(sample_individual_ids) == 0
-    assert np.max(np.diff(sorted(sample_individual_ids))) == 1
-    last_sample_idx = np.max(sample_individual_ids)
-
-    # Trim non-sample individuals from the tables
-    ind_tables = ll_tables['individuals']
-    ind_tables['flags'] = ind_tables['flags'][:last_sample_idx + 1]
-
-    # We add one to offset indices. Since their first value is always 0,
-    # our data is shifted right by 1
-    ind_tables['location_offset'] = \
-        ind_tables['location_offset'][:last_sample_idx + 2]
-    idx = ind_tables['location_offset'][-1]
-    ind_tables['location'] = ind_tables['location'][:idx]
-
-    ind_tables['metadata_offset'] = \
-        ind_tables['metadata_offset'][:last_sample_idx + 2]
-    idx = ind_tables['metadata_offset'][-1]
-    ind_tables['metadata'] = ind_tables['metadata'][:idx]
-
-    # This is redundant (assigned them equal above) but is more explicit if
-    # if wasn't clear that we in fact updated the original dict in-place
-    ll_tables['individuals'] = ind_tables
-
-    # Clear out references to individuals which we've removed
-    for i in range(ll_tables['nodes']['individual'].shape[0]):
-        ind_idx = ll_tables['nodes']['individual'][i]
-        if ind_idx not in set(sample_individual_ids):
-            ll_tables['nodes']['individual'][i] = -1
-
-    # Create new tree sequence with only sample individuals and save to
-    # tempfile to be converted to VCF
-    ts_only_sample_inds = msprime.tskit.tables.TableCollection.fromdict(
-                                ll_tables
-                            ).tree_sequence()
-
-    return ts_only_sample_inds
-
-
-def ts_to_bcf_single(ts_file, out_file, runner, keep):
-    # Need to remove non-sample individuals from ts or else tskit gets confused
     ts = msprime.load(ts_file)
     if ts.num_individuals == 0:
         bcf_cmd = "tskit vcf --ploidy 2 {} | bcftools view -O b > {}".format(
                            ts_file, out_file)
         runner.run(bcf_cmd)
     else:
-        #    ts_only_sample_inds = ts_clean_inds(ts)
+        # remove sites based on allele frequency cutoff
         sample_nodes = ts.samples()
+
+        if af_cutoff is not None:
+            sites_to_delete = []
+            for tree in ts.trees():
+                for mutation in tree.mutations():
+                    # should this be count-1 since the node itself is included?
+                    count = tree.num_samples(mutation.node)
+                    # note that this is non-polarized frequency ( > 50% possible)
+                    if (count / len(sample_nodes)) < af_cutoff:
+                        sites_to_delete.append(mutation.site)
+
+            # bulk-remove sites
+            tables = ts.dump_tables()
+            tables.delete_sites(sites_to_delete, record_provenance=False)
+            ts = tables.tree_sequence()
+            
         sample_individuals = []
         for ind in ts.individuals():
             if len(ind.nodes) == 0:
                 continue
-
+            # diploid - two nodes, both the same individual
             if ind.nodes[0] in sample_nodes:
                 assert len(ind.nodes) == 2
                 assert ind.nodes[1] in sample_nodes
                 sample_individuals.append(ind)
 
-        keep_individuals = np.random.choice(sample_individuals, keep, replace=False)
+        if n_subsample is not None:
+            sample_individuals = np.random.choice(sample_individuals, n_subsample, replace=False)
                 
         # TODO: This will probably fail if metadata isn't present
-        keep_names = [ind.metadata.decode('utf8')
-                        for ind in keep_individuals]
-        keep_ids = [ind.id for ind in  keep_individuals]
+        sample_names = [ind.metadata.decode('utf8') for ind in sample_individuals]
+        sample_ids = [ind.id for ind in  sample_individuals]
         
         
         read_fd, write_fd = os.pipe()
@@ -119,7 +78,7 @@ def ts_to_bcf_single(ts_file, out_file, runner, keep):
                 ["bcftools", "view", "-O", "b"], stdin=read_fd, stdout=f
             )
             ts.write_vcf(
-                write_pipe, individuals=keep_ids, individual_names=keep_names
+                write_pipe, individuals=sample_ids, individual_names=sample_names
             )
             write_pipe.close()
             os.close(read_fd)
@@ -164,7 +123,7 @@ def main(args):
             tmp_bcf_file = os.path.join(tmpdirname, '.tmp' + str(i) + '.bcf')
             tmp_bcf_files.append(tmp_bcf_file)
 
-            ts_to_bcf_single(tsf, tmp_bcf_file, runner, args.keep)
+            ts_to_bcf_single(tsf, tmp_bcf_file, runner, af_cutoff=args.af_cutoff, n_subsample=args.n_subsample)
             bcf_convert_chrom(tmp_bcf_file, chrom_num, runner)
 
         concat_bcf(tmp_bcf_files, out_file, runner)
@@ -174,7 +133,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-t', '--ts-file', nargs="*", required=True)
     parser.add_argument('-o', '--out-file', required=True)
-    parser.add_argument('-k', '--keep', type=int, default=None, help="Number of individuals to keep in the output. Default - all")
+    parser.add_argument('-s', '--n_subsample', type=int, default=None, help="Randomly sumbsample this many individuals. Default - all")
+    parser.add_argument('-f', '--af_cutoff', type=float, default=None, help="Drop sites below this allele frequency cutoff. Default - 0")
     parser.add_argument('-v', '--verbose', action='store_true')
     parser.add_argument('-T', '--test', action='store_true')
 
