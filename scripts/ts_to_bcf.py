@@ -25,6 +25,36 @@ class Runner:
         if not self.test:
             subprocess.run(cmd, shell=True, check=True)
 
+def test_afs_calculation(ts_file='cached/balsac_140.tskit'):
+    if not os.path.exists(ts_file):
+        
+        ped = msprime.Pedigree.read_txt('data/balsac_140.tsv')
+        ped.set_samples(num_samples=14)
+        des = [msprime.SimulationModelChange(max(ped.time))]
+        sim = msprime.simulate(14,
+                               Ne=1000,
+                               pedigree=ped,
+                               model='wf_ped',
+                               length=1e8,
+                               mutation_rate=1e-8,
+                               recombination_rate=1e-8,
+                               demographic_events=des)
+
+        sim.dump('cached/balsac_140.tskit')
+    
+    ts = msprime.load(ts_file)
+    sample_nodes = ts.samples()
+    afs = np.zeros(len(sample_nodes)+1)
+    for tree in ts.trees():
+        for mutation in tree.mutations():
+            count = tree.num_samples(mutation.node)
+            frequency = count / len(sample_nodes)
+            afs[count] += 1
+
+    ts_afs = ts.allele_frequency_spectrum(polarised=True, span_normalise=False)
+    
+    assert np.allclose(afs, ts_afs)
+
 
 # TODO - provide a way to subsample based on a file with IDs
 def ts_to_bcf_single(ts_file, out_file, runner, af_cutoff=None, n_subsample=None):

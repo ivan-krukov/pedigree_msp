@@ -5,3 +5,4 @@ snakejob.*
 slurm*.out
 *.swp
 .ipynb_checkpoints/
+/scripts/__pycache__/
