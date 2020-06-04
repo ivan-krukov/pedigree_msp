@@ -57,7 +57,7 @@ def test_afs_calculation(ts_file='cached/balsac_140.tskit'):
 
 
 # TODO - provide a way to subsample based on a file with IDs
-def ts_to_bcf_single(ts_file, out_file, runner, af_cutoff=None, n_subsample=None):
+def ts_to_bcf_single(ts_file, out_file, runner, af_cutoff=0, n_subsample=None, remove_singletons=False):
 
     ts = msprime.load(ts_file)
     if ts.num_individuals == 0:
@@ -68,7 +68,7 @@ def ts_to_bcf_single(ts_file, out_file, runner, af_cutoff=None, n_subsample=None
         # remove sites based on allele frequency cutoff
         sample_nodes = ts.samples()
 
-        if af_cutoff is not None:
+        if (af_cutoff != 0) or remove_singletons:
             sites_to_delete = []
             for tree in ts.trees():
                 for mutation in tree.mutations():
@@ -76,6 +76,8 @@ def ts_to_bcf_single(ts_file, out_file, runner, af_cutoff=None, n_subsample=None
                     count = tree.num_samples(mutation.node)
                     # note that this is non-polarized frequency ( > 50% possible)
                     if (count / len(sample_nodes)) < af_cutoff:
+                        sites_to_delete.append(mutation.site)
+                    if remove_singletons and count == 1:
                         sites_to_delete.append(mutation.site)
 
             # bulk-remove sites
@@ -153,7 +155,7 @@ def main(args):
             tmp_bcf_file = os.path.join(tmpdirname, '.tmp' + str(i) + '.bcf')
             tmp_bcf_files.append(tmp_bcf_file)
 
-            ts_to_bcf_single(tsf, tmp_bcf_file, runner, af_cutoff=args.af_cutoff, n_subsample=args.n_subsample)
+            ts_to_bcf_single(tsf, tmp_bcf_file, runner, af_cutoff=args.af_cutoff, n_subsample=args.n_subsample, remove_singletons=args.remove_singletons)
             bcf_convert_chrom(tmp_bcf_file, chrom_num, runner)
 
         concat_bcf(tmp_bcf_files, out_file, runner)
@@ -164,7 +166,8 @@ if __name__ == "__main__":
     parser.add_argument('-t', '--ts-file', nargs="*", required=True)
     parser.add_argument('-o', '--out-file', required=True)
     parser.add_argument('-s', '--n_subsample', type=int, default=None, help="Randomly sumbsample this many individuals. Default - all")
-    parser.add_argument('-f', '--af_cutoff', type=float, default=None, help="Drop sites below this allele frequency cutoff. Default - 0")
+    parser.add_argument('-f', '--af_cutoff', type=float, default=0, help="Drop sites below this allele frequency cutoff. Default - 0")
+    parser.add_argument('-r', '--remove-singletons', action='store_true', help="Drop sites with a single mutation")
     parser.add_argument('-v', '--verbose', action='store_true')
     parser.add_argument('-T', '--test', action='store_true')
 
